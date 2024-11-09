@@ -1,52 +1,55 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-contract BitcoinPredictionContract {
-    address public owner;                 // Endereço do administrador do contrato
-    uint public predictionThreshold;      // Limite de preço para acionar a transação
-    address payable public recipient;     // Destinatário para o qual a quantia será enviada se a condição for atendida
+import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+import "@chainlink/contracts/src/v0.8/ChainlinkClient.sol";
+import "@chainlink/contracts/src/v0.8/ConfirmedOwner.sol";
 
-    uint public lastPrediction;           // Última previsão de preço armazenada
+contract BitcoinPredictionContract is ChainlinkClient, ConfirmedOwner {
+    using Chainlink for Chainlink.Request;
 
-    // Evento para logar previsões e transações
-    event PredictionStored(uint prediction);
-    event ThresholdBreached(uint prediction, address recipient, uint amount);
+    uint256 public predictionThreshold;
+    address payable public recipient;
+    address private oracle;
+    bytes32 private jobId;
+    uint256 private fee;
+    uint256 public predictedPrice;
 
-    // Modificador para funções exclusivas do dono
-    modifier onlyOwner() {
-        require(msg.sender == owner, "Somente o administrador pode executar esta funcao");
-        _;
-    }
-
-    constructor(uint _predictionThreshold, address payable _recipient) {
-        owner = msg.sender;                     // Define o dono do contrato
+    // Construtor
+    constructor(
+        uint256 _predictionThreshold,
+        address payable _recipient,
+        address _oracle,
+        bytes32 _jobId,
+        uint256 _fee,
+        address _link
+    ) ConfirmedOwner(msg.sender) {
+        _setChainlinkToken(_link);
+        oracle = _oracle;
+        jobId = _jobId;
+        fee = _fee;
         predictionThreshold = _predictionThreshold;
         recipient = _recipient;
     }
 
-    // Função para atualizar o limite
-    function updateThreshold(uint _newThreshold) public onlyOwner {
-        predictionThreshold = _newThreshold;
+    // Solicitação ao oráculo Chainlink para uma nova previsão
+    function requestPrediction() public returns (bytes32 requestId) {
+        Chainlink.Request memory request = _buildChainlinkRequest(jobId, address(this), this.fulfill.selector);
+        return _sendChainlinkRequestTo(oracle, request, fee);
     }
 
-    // Função para atualizar o destinatário
-    function updateRecipient(address payable _newRecipient) public onlyOwner {
-        recipient = _newRecipient;
-    }
-
-    // Função para armazenar a previsão e checar o limite
-    function storePrediction(uint _prediction) public payable {
-        lastPrediction = _prediction;
-        emit PredictionStored(_prediction);    // Loga a previsão armazenada
-
-        // Verifica se a previsão excede o limite
-        if (_prediction > predictionThreshold) {
-            uint amount = address(this).balance;   // Define o valor a ser enviado (pode ser ajustado)
-            require(amount > 0, "Sem saldo suficiente para transferir");
-
-            recipient.transfer(amount);
-            emit ThresholdBreached(_prediction, recipient, amount);
+    // Receber a previsão do oráculo
+    function fulfill(bytes32 _requestId, uint256 _predictedPrice) public recordChainlinkFulfillment(_requestId) {
+        predictedPrice = _predictedPrice;
+        if (predictedPrice > predictionThreshold) {
+            sendFunds();
         }
+    }
+
+    // Enviar fundos para o destinatário
+    function sendFunds() internal {
+        require(address(this).balance > 0, "Contrato sem saldo");
+        recipient.transfer(address(this).balance);
     }
 
     // Função para o dono do contrato enviar fundos ao contrato para transferências
@@ -55,6 +58,6 @@ contract BitcoinPredictionContract {
     // Função para o dono do contrato retirar fundos
     function withdraw(uint amount) public onlyOwner {
         require(address(this).balance >= amount, "Saldo insuficiente");
-        payable(owner).transfer(amount);
+        payable(msg.sender).transfer(amount); // Usando msg.sender diretamente
     }
 }
